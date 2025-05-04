@@ -1,0 +1,582 @@
+---
+title: "Untitled"
+author: "Qiutong CHEN"
+date: "2025-05-04"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# Load required packages
+library(haven)
+library(dplyr)
+library(modelsummary)
+library(fastDummies)
+library(quantreg)
+library(hqreg)
+library(car)
+library(stargazer)
+library(ggplot2)
+library(forcats)
+
+# Read the data
+date3 <- read_dta("/Users/chenqiutong/Downloads/CGSS2017.dta")
+
+# Select required variables
+df1 <- date3 %>%
+  select(a2, a31, a4, a7a, a45, a53, a10, a18,
+         a53a, a561, a562, a563, a564, a565, a566, a567,
+         a5698, a5699, a7b, a7c, a8a, a8b, a57b, a58,
+         a59a, a59b, a59c, a59f, a59e, a59j, a59k,
+         a89b, a89c, a89f, a89g, a89h, a90b, a90c, a90f, a90g, a90h,
+         d36, c11, c12, a27b, a27d, c13, c14, c15, c16, c17, c18, c19, c110, c82, c20)
+
+# Calculate age (using 2017 as the base year)
+df1 <- df1 %>%
+  mutate(age = 2017 - as.numeric(a31)) %>%
+  filter(age <= 60)
+
+# Filter valid income
+df1 <- df1 %>%
+  mutate(
+    # Rename `a8b` to `annual_income`, handle special codes
+    annual_income = ifelse(a8b %in% c(9999996, 9999997, 9999998, 9999999), NA, a8b),
+    
+    # Calculate log wage (only for positive income)
+    log_wage = ifelse(annual_income > 0, log(annual_income), NA),
+    
+    # Winsorization at the top 1%
+    log_wage = ifelse(
+      log_wage > quantile(log_wage, 0.99, na.rm = TRUE),
+      quantile(log_wage, 0.99, na.rm = TRUE),
+      log_wage
+    )
+  ) %>%
+  # Filter records where a8a is between 1000 and 9,000,000
+  filter(a8a > 1000, a8a < 9000000) %>%
+  filter(!is.na(log_wage))  # Drop missing values
+
+# Process work status variable
+df1 <- df1 %>%
+  mutate(
+    # Set values 98/99 as NA
+    a59a = ifelse(a59a %in% c(98, 99), NA, a59a),
+    # Convert to factor and assign labels
+    a59a = factor(a59a,
+                  levels = c(1:9),
+                  labels = c("Boss/Partner", "Sole Proprietor", "Employed by Others",
+                             "Laborer", "Casual Worker", "Self-employed (with salary)",
+                             "Self-employed (without salary)", "Freelancer", "Other")),
+    # Collapse the two self-employed categories into one
+    a59a = fct_collapse(a59a,
+                        "Self-employed" = c("Self-employed (with salary)", "Self-employed (without salary)")
+  )
+
+table(df1$a59a)
+
+# Process a59f variable
+df1 <- df1 %>%
+  mutate(
+    a59f = ifelse(a59f %in% c(98, 99), NA, a59f),
+    a59f = factor(a59f,
+                  levels = c(1:4),
+                  labels = c("Manager", "Manage and be managed", "Only be managed", "No management")
+  )
+table(df1$a59f)
+
+# Classify industry categories for a57b
+df1 <- df1 %>%
+  mutate(
+    a57b_group = case_when(
+      a57b == 1 ~ "Agriculture, Forestry, Animal Husbandry, and Fisheries",
+      a57b %in% c(2, 3) ~ "Workers",
+      a57b %in% c(4, 5) ~ "Business/Office Staff",
+      a57b %in% c(6, 7) ~ "Managers",
+      a57b %in% c(8:10) ~ "Technical Professionals",
+      a57b %in% c(11, 12) ~ "Entrepreneurs/Sole Proprietors",
+      a57b == 14 ~ "Students",
+      TRUE ~ "Other/Missing"
+    ),
+    a57b_group = factor(a57b_group)
+  )
+table(df1$a57b)
+
+# Convert education level a7a to an ordered factor
+df1 <- df1 %>%
+  mutate(edu_level = factor(a7a,
+                            levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"),
+                            labels = c("No education", "Literacy classes", "Primary school", "Middle school", 
+                                       "Vocational high school", "Regular high school", "Secondary specialized school", 
+                                       "Technical school", "College diploma (adult HE)", "College diploma (regular HE)", 
+                                       "Bachelor's (adult HE)", "Bachelor's (regular HE)", "Graduate and above", "Other"),
+                            ordered = TRUE))
+
+# Group education levels into categories
+df1 <- df1 %>%
+  mutate(edu_group = case_when(
+    edu_level %in% c("No education", "Literacy classes") ~ "Primary_or_below",
+    edu_level %in% c("Primary school", "Middle school") ~ "Junior_high",
+    edu_level %in% c("Vocational high school", "Regular high school") ~ "High_school",
+    edu_level %in% c("Secondary specialized school", "Technical school") ~ "Technical_secondary",
+    edu_level %in% c("College diploma (adult HE)", "College diploma (regular HE)") ~ "College",
+    edu_level %in% c("Bachelor's (adult HE)", "Bachelor's (regular HE)") ~ "Bachelor",
+    edu_level == "Graduate and above" ~ "Graduate",
+    TRUE ~ "Other"
+  ))
+
+# Specify factor levels and reference group
+df1$edu_group <- factor(
+  df1$edu_group,
+  levels = c("Primary_or_below",
+             "Junior_high",
+             "High_school",
+             "Technical_secondary",
+             "College",
+             "Bachelor",
+             "Graduate",
+             "Other"),
+  ordered = FALSE
+)
+
+# Generate dummy variables, removing the first category (reference)
+df1 <- dummy_cols(
+  df1,
+  select_columns = "edu_group",
+  remove_first_dummy = TRUE,
+  remove_selected_columns = FALSE
+)
+
+# Check factor levels
+levels(df1$edu_group)
+table(df1$edu_group)
+print(names(df1)[grep("edu_group_", names(df1))])
+
+# Process non-agricultural work years a59c, assign 0 to missing values
+df1 <- df1 %>%
+  mutate(
+    a59c = case_when(
+      a59c == 72 ~ 6,
+      (is.na(a59c) | a59c %in% c(98, 99)) & !(a7c %in% c(0, 9997, 9998)) ~ 2017 - a7c,
+      (is.na(a59c) | a59c %in% c(98, 99)) & (a7c %in% c(0, 9997, 9998)) ~ NA_real_,
+      TRUE ~ a59c
+    )
+  )
+
+# Process work type (a59e), work unit type (a59j), and ownership type (a59k)
+df1 <- df1 %>%
+  mutate(
+    # a59e: unify 98, 99, and NA into "Missing"
+    a59e = as.character(a59e),
+    a59e = ifelse(a59e %in% c("98", "99") | is.na(a59e), "Missing", a59e),
+    a59e = factor(a59e, levels = c("1", "2", "Missing"),
+                  labels = c("Full-time", "Non-full-time", "Missing")),
+    
+    # a59j: similarly process
+    a59j = as.character(a59j),
+    a59j = ifelse(a59j %in% c("98", "99") | is.na(a59j), "Missing", a59j),
+    a59j = factor(a59j, levels = c("1", "2", "3", "4", "5", "6", "7", "Missing"),
+                  labels = c("Government", "Enterprise", "Public institution", "Social organization/Commune",
+                             "No unit/self-employed", "Military", "Other", "Missing")),
+    
+    # a59k: similarly process
+    a59k = as.character(a59k),
+    a59k = ifelse(a59k %in% c("98", "99") | is.na(a59k), "Missing", a59k),
+    a59k = factor(a59k, levels = c("1", "2", "3", "4", "5", "6", "Missing"),
+                  labels = c("State-owned", "Collectively owned", "Private/Privately held",
+                             "Hong Kong/Macau/Taiwan capital", "Foreign-owned", "Other", "Missing"))
+  )
+
+# Generate dummy variables (remove reference group)
+df1 <- dummy_cols(df1, select_columns = c("a59e", "a59j", "a59k"),
+                  remove_first_dummy = TRUE,
+                  remove_selected_columns = FALSE)
+
+# Merge categories with sample size < 100
+df1 <- df1 %>%
+  mutate(
+    a59j = fct_lump_min(a59j, min = 200, other_level = "Other_merged"),
+    a59k = fct_lump_min(a59k, min = 200, other_level = "Other_merged")
+  )
+table(df1$a59j)
+table(df1$a59k)
+
+df1 <- df1 %>%
+  mutate(
+    a59e = as.character(a59e),
+    a59j = as.character(a59j),
+    a59k = as.character(a59k),
+    across(c(a59e, a59j, a59k), ~ifelse(.x == "Missing", "Missing", .x))
+  )
+
+library(fastDummies)
+df_model <- df1 %>%
+  dummy_cols(
+    select_columns = c("a59e", "a59j", "a59k"),
+    remove_first_dummy = TRUE,
+    remove_selected_columns = TRUE
+  ) %>%
+  select(-contains("Missing"))  # Remove "Missing" dummies to avoid multicollinearity
+
+# Calculate log wage a8b and winsorize at top 1%
+df1 <- df1 %>%
+  mutate(
+    log_wage = log(a8b),
+    log_wage = ifelse(log_wage > quantile(log_wage, 0.99, na.rm = TRUE),
+                      quantile(log_wage, 0.99, na.rm = TRUE),
+                      log_wage)
+  ) %>%
+  filter(!is.na(log_wage))
+
+# Define custom merge function for parental education
+merge_education <- function(x) {
+  case_when(
+    x %in% c(1, 2, 3) ~ "Low education (primary school or below)",
+    x %in% c(4, 5, 6, 7, 8) ~ "Moderate education (middle/high school or technical school)",
+    x %in% c(9, 10, 11, 12) ~ "Higher education (college/university)",
+    x == 13 ~ "Graduate and above",
+    x %in% c(14, 98, 99) ~ "Other/Missing"
+  )
+}
+
+# Process father's education (A89b) and mother's education (A90b)
+df1 <- df1 %>%
+  mutate(
+    father_edu = merge_education(a89b),
+    mother_edu = merge_education(a90b),
+    father_edu = factor(father_edu, 
+                        levels = c("Low education (primary school or below)", 
+                                   "Moderate education (middle/high school or technical school)", 
+                                   "Higher education (college/university)", 
+                                   "Graduate and above", 
+                                   "Other/Missing"),
+                        ordered = TRUE),
+    mother_edu = factor(mother_edu, 
+                        levels = c("Low education (primary school or below)", 
+                                   "Moderate education (middle/high school or technical school)", 
+                                   "Higher education (college/university)", 
+                                   "Graduate and above", 
+                                   "Other/Missing"),
+                        ordered = TRUE)
+  )
+
+df1 <- df1 %>%
+  mutate(
+    father_edu = as.factor(father_edu),
+    mother_edu = as.factor(mother_edu)
+  )
+
+str(df1$a89b)
+
+# Create a gender dummy variable (assuming that 1 in a2 is male and the others are female)
+df1 <- df1 %>%
+  mutate(male = ifelse(a2 == 1, 1, 0))
+
+df1 <- dummy_cols(
+  df1,
+  select_columns = "a57b_group",
+  remove_first_dummy = TRUE,
+  remove_selected_columns = FALSE
+)
+
+df1 <- dummy_cols(
+  df1,
+  select_columns = "a59a",
+  remove_first_dummy = TRUE,
+  remove_selected_columns = FALSE
+)
+
+df1 <- dummy_cols(
+  df1,
+  select_columns = "a59f",
+  remove_first_dummy = TRUE,
+  remove_selected_columns = FALSE
+)
+
+df1 <- df1 %>%
+  mutate(
+    father_edu = as.factor(father_edu),
+    mother_edu = as.factor(mother_edu)
+  )
+
+df1 <- dummy_cols(
+  df1,
+  select_columns = c("father_edu", "mother_edu"),
+  remove_first_dummy = TRUE,
+  remove_selected_columns = FALSE
+)
+table(df1$a59a)
+table(df1$a59f)
+table(df1$father_edu)
+table(df1$mother_edu)
+
+df1 %>% 
+  group_by(edu_group) %>% 
+  summarise(mean_wage = mean(annual_income, na.rm = TRUE),
+            prop_high_skill = mean(a59j == "Enterprise", na.rm = TRUE))
+
+df1 <- df1 %>%
+  mutate(
+    hukou_type = factor(
+      case_when(
+        a18 == 1 ~ "rural_agricultural",
+        a18 == 2 ~ "urban_non_agri",
+        a18 == 3 ~ "rural_converted",
+        a18 == 4 ~ "urban_converted",
+        TRUE ~ "other"
+      ),
+      levels = c("rural_agricultural", "rural_converted", 
+                 "urban_non_agri", "urban_converted")
+    )
+  ) %>%
+  dummy_cols(select_columns = "hukou_type", remove_first_dummy = TRUE)
+table(df1$a18, df1$hukou_type)
+
+library(dplyr)
+library(writexl)
+
+# Tool function: Generate probability distribution table
+library(dplyr)
+library(writexl)
+
+# Function to calculate probability distribution for a variable
+get_distribution <- function(var, var_name) {
+  tbl <- prop.table(table(var))
+  df <- as.data.frame(tbl)
+  colnames(df) <- c("Interval_or_Category", "Probability")
+  df$Variable <- var_name
+  df <- df[, c("Variable", "Interval_or_Category", "Probability")]
+  return(df)
+}
+
+# 1. Process continuous variables: bin using cut(), then calculate proportions
+df1$age_group <- cut(df1$age, breaks = seq(15, 60, by = 5), right = FALSE)
+df1$income_group <- cut(df1$annual_income, breaks = 10)
+df1$logwage_group <- cut(df1$log_wage, breaks = seq(6, 12, by = 0.2), right = FALSE)
+df1$workexp_group <- cut(df1$a59c, breaks = seq(0, 40, by = 5), right = FALSE)
+df1$gender <- ifelse(df1$male == 1, "Male", "Female")
+
+# 2. Calculate probability distribution for each variable
+dist_list <- list(
+  get_distribution(df1$age_group, "Age"),
+  get_distribution(df1$income_group, "Annual Income"),
+  get_distribution(df1$logwage_group, "Log Income"),
+  get_distribution(df1$gender, "Gender"),
+  get_distribution(df1$workexp_group, "Work Experience"),
+  get_distribution(df1$edu_group, "Education Level"),
+  get_distribution(df1$a59a, "Employment Status"),
+   get_distribution(df1$a59k, "Company Status"),
+  get_distribution(df1$a59f, "Position Role"),
+  get_distribution(df1$a57b_group, "Industry"),
+  get_distribution(df1$hukou_type, "Hukou Type"),
+  get_distribution(df1$father_edu, "Father's Education"),
+  get_distribution(df1$mother_edu, "Mother's Education")
+)
+
+# 3. Combine all distributions into a single table
+full_distribution <- bind_rows(dist_list)
+
+# 4. Export to Excel (make sure 'writexl' package is installed)
+write_xlsx(full_distribution, "CGSS2017_Variable_Probability_Distributions.xlsx")
+
+#---------------------------------------------
+# Quantile regression model
+# The sample model here only selects some dummy variables:
+# - For the nature of work (a59e), the a59e_Non.full.time dummy variable is used (reference group: Full-time)
+# - For the type of work unit (a59j), the a59j_Enterprise is used (the reference group may be Government)
+# - For the ownership of the unit (a59k), the a59k_State-owned is used (reference group: State-owned)
+#qr_model <- rq(
+#  log_wage ~ edu_group_High_school + edu_group_Technical_secondary + 
+#edu_group_College + edu_group_Bachelor + edu_group_Graduate +
+    #a59c + male + hukou_type_urban_non_agri + hukou_type_urban_converted  +
+    #`a59e_Non-full-time` + a59j_Enterprise + `a59k_Foreign-owned`,
+  #data = df1,
+ # tau = c(0.25, 0.5, 0.75))
+
+qr_model <- rq(
+  log_wage ~ edu_group + a59c + male + hukou_type + a59a + a59f + a57b_group + father_edu + mother_edu,
+  data = df1,
+  tau = c(0.25, 0.5, 0.75)
+)
+
+summary(qr_model, se = "boot", R = 500)
+library(broom)
+library(dplyr)
+library(ggplot2)
+
+tidy_qr <- tidy(qr_model)
+names(tidy_qr)
+
+tidy_qr_sig <- tidy_qr %>% filter(conf.low * conf.high > 0)
+
+ggplot(tidy_qr_sig, aes(x = tau, y = estimate, color = term)) +
+  geom_line() +
+  facet_wrap(~ term, scales = "free") +
+  labs(title = "Trend of Bootstrap-Adjusted Coefficient Changes",
+       subtitle = "Only significant variables (p < 0.05)")
+
+library(car)
+
+# Calculate VIF (needs linear model approximation)
+lm_model <- lm(log_wage ~ edu_group + a59c + male + hukou_type + 
+              a59a + a59f + a57b_group + father_edu + mother_edu, data = df1)
+vif_values <- vif(lm_model)
+print(vif_values)
+
+# Visualizing the Correlation Matrix
+cor_matrix <- cor(model.matrix(lm_model)[,-1])  # Excluding the intercept term
+library(corrplot)
+corrplot(cor_matrix, method = "number")
+
+# This assumes the median regression model stored in qr_median (e.g. a model with tau=0.5)
+pred_log_wage <- predict(qr_model, newdata = df1, tau = 0.5)
+pred_wage <- exp(pred_log_wage)
+
+residual_log <- df1$log_wage - pred_log_wage
+df1 <- df1 %>%
+  mutate(pred_log_wage = pred_log_wage,
+         pred_wage = pred_wage,
+         residual_log = residual_log)
+
+# View some results
+head(df1[, c("log_wage", "pred_log_wage", "pred_wage", "residual_log")])
+
+```{r setup, include=FALSE}
+# Define occupational prestige categories
+high_prestige <- c(2, 6, 9)    # Executives, lawyers, police officers
+medium_prestige <- c(5, 8, 10) # HR managers, nurses, junior high school teachers
+low_prestige <- c(1, 3, 4, 7)  # Drivers, cleaners, hairdressers, car mechanics
+
+# Create occupational prestige classification variables
+df1 <- df1 %>%
+  mutate(
+    # High prestige occupation ties (strong ties: family/relatives = 1, friends = 2)
+    high_prestige_strong = rowSums(across(
+      .cols = c(c12, c16, c19),
+      .fns = ~ .x %in% c(1, 2)
+    )),
+    
+    # High prestige occupation ties (weak ties: acquaintances = 3)
+    high_prestige_weak = rowSums(across(
+      .cols = c(c12, c16, c19),
+      .fns = ~ .x == 3)
+    ),
+    
+    # Medium prestige occupation ties (strong ties)
+    medium_prestige_strong = rowSums(across(
+      .cols = c(c15, c18, c110),
+      .fns = ~ .x %in% c(1, 2)
+    )),
+    
+    # Medium prestige occupation ties (weak ties)
+    medium_prestige_weak = rowSums(across(
+      .cols = c(c15, c18, c110),
+      .fns = ~ .x == 3
+    )),
+    
+    # Low prestige occupation ties (strong ties)
+    low_prestige_strong = rowSums(across(
+      .cols = c(c11, c13, c14, c17),
+      .fns = ~ .x %in% c(1, 2)
+    )),
+    
+    # Low prestige occupation ties (weak ties)
+    low_prestige_weak = rowSums(across(
+      .cols = c(c11, c13, c14, c17),
+      .fns = ~ .x == 3
+    ))
+  )
+
+# Create composite network indicators
+df1 <- df1 %>%
+  mutate(
+    # Total number of strong ties (across all prestige levels)
+    total_strong_ties = high_prestige_strong + medium_prestige_strong + low_prestige_strong,
+    
+    # Total number of weak ties
+    total_weak_ties = high_prestige_weak + medium_prestige_weak + low_prestige_weak,
+    
+    # High prestige network strength (considering tie strength weights)
+    high_prestige_network = high_prestige_strong * 1 + high_prestige_weak * 0.5,
+    
+    # Network resource index (assigning higher weight to high prestige occupations)
+    network_resource_index = (high_prestige_strong * 2 + high_prestige_weak * 1) +
+                            (medium_prestige_strong * 1 + medium_prestige_weak * 0.5) +
+                            (low_prestige_strong * 0.5 + low_prestige_weak * 0.25)
+  )
+
+# Calculate the mean and standard deviation of network_resource_index
+mean_index <- mean(df1$network_resource_index, na.rm = TRUE)
+sd_index <- sd(df1$network_resource_index, na.rm = TRUE)
+
+# Construct a 95% confidence interval (roughly 95% of data under normal distribution)
+lower_bound <- mean_index - 1.96 * sd_index
+upper_bound <- mean_index + 1.96 * sd_index
+
+# Calculate distribution quantiles
+quantiles <- quantile(df_complete$network_resource_index, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE)
+df_distribution_quantile <- df1 %>%
+  mutate(interval = cut(network_resource_index, breaks = quantiles, include.lowest = TRUE)) %>%
+  group_by(interval) %>%
+  summarise(
+    n = n(),
+    probability = n() / nrow(df1)
+  )
+df_distribution_quantile
+
+# R code example: create help type variable
+df1 <- df1 %>%
+  mutate(
+    help_type = case_when(
+      c82 == 1 | c82 == 2 ~ "informal",
+      c82 == 3 | c82 == 4 | c82 == 5 ~ "formal",
+      c82 %in% c(6,7) ~ "other",
+      TRUE ~ NA_character_
+    ),
+    help_type = factor(help_type, levels = c("informal", "formal", "other"))
+  )
+
+# R code example: create network size variable
+df1 <- df1 %>%
+  mutate(
+    contact_num = case_when(
+      c20 == 1 ~ 2,
+      c20 == 2 ~ 7,
+      c20 == 3 ~ 14.5,
+      c20 == 4 ~ 34.5,
+      c20 == 5 ~ 74.5,
+      c20 == 6 ~ 100,
+      TRUE ~ NA_real_
+    ),
+    log_contact = log(contact_num + 1)  # Avoid taking log of zero
+  )
+
+# Remove all observations with missing values
+df_complete <- na.omit(df1[, c("help_type","high_prestige_strong", 
+                             "high_prestige_weak", "medium_prestige_strong",
+                             "medium_prestige_weak","contact_num", "low_prestige_strong",
+                             "low_prestige_weak", "network_resource_index")])
+
+# Check remaining sample size
+nrow(df_complete)  # If too few samples remain (e.g., <1000), consider alternative methods
+
+# Quantile Regression Analysis Example
+library(quantreg)
+model11 <- lm(residual_log ~ help_type + contact_num + network_resource_index , data = df1)
+summary(model11, se = "boot")
+library(ggplot2)
+library(broom)  # Extracting model results
+
+# Extract coefficient, standard error, p-value
+model_summary <- summary(model11, se = "boot")
+coef_table <- as.data.frame(model_summary$coefficients)
+
+# Arrange into a data frame
+coef_df <- data.frame(
+  term = rownames(coef_table),
+  estimate = coef_table$Estimate,
+  std.error = coef_table$`Std. Error`,
+  p.value = coef_table$`Pr(>|t|)`,
+  stringsAsFactors = FALSE)
+
+
+```
+
