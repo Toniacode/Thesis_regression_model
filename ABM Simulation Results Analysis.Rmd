@@ -1,0 +1,188 @@
+---
+title: "ABM Simulation Results Analysis"
+output: pdf_document
+date: "2025-07-20"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(effsize)
+
+# 读取数据并清洗
+data <- read.csv("/Users/chenqiutong/Desktop/network-comparison-table.csv", skip = 6)
+
+df <- data %>%
+  select(network.type, mean.wages, wage.R, wage.SS, wage.FS) %>%
+  mutate(network.type = factor(network.type, 
+                               levels = c("BA", "Small-World", "ER", "no-network")))
+
+# 1. 描述性统计
+#desc_stats <- df %>%
+#  group_by(network.type) %>%
+#   summarise(
+#     n = n(),
+#     mean_wage = mean(mean.wages),
+#     sd_wage = sd(mean.wages),
+#     mean_R = mean(wage.R),
+#     mean_SS = mean(wage.SS),
+#     mean_FS = mean(wage.FS)
+#   )
+# print(desc_stats)
+
+desc_stats1 <- df %>%
+  group_by(network.type) %>%
+  summarise(
+    n = n(),
+    mean_wage = mean(mean.wages),
+    sd_wage = sd(mean.wages),
+    median = median(mean.wages),
+    max = max(mean.wages),
+    min = min(mean.wages)
+  )
+print(desc_stats1)
+
+####new
+# 创建分组变量：有网络 vs 无网络
+df$has_network <- ifelse(df$network.type == "no-network", "nonetwork", "network")
+
+# 独立样本t检验（假设方差齐性）
+t.test(mean.wages ~ has_network, data = df, var.equal = TRUE)
+
+# 不假设方差齐性（Welch t检验）
+t.test(mean.wages ~ has_network, data = df)
+
+# BA网络 vs ER网络
+t.test(df$mean.wages[df$network.type == "BA"],
+       df$mean.wages[df$network.type == "ER"])
+
+# 小世界网络 vs 无网络
+t.test(df$mean.wages[df$network.type == "Small-World"],
+       df$mean.wages[df$network.type == "no-network"])
+
+# 2. 可视化分析
+## 平均薪资分布箱线图
+ggplot(df, aes(x = network.type, y = mean.wages, fill = network.type)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +  # 不显示箱型图的离群点，避免遮挡
+  geom_jitter(width = 0.2, size = 1, alpha = 0.8, aes(color = network.type)) +  # 添加原始数据点
+  labs(
+    title = "Average wage distribution under different network types",
+    x = "Network",
+    y = "Average wage"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")  # 去除图例（颜色与填充一致时可省略）
+
+
+# 3. 统计检验
+## 方差分析（检查网络类型对平均薪资的影响）
+res.aov <- aov(mean.wages ~ network.type, data = df)
+summary(res.aov)
+
+## 事后检验（若ANOVA显著）
+TukeyHSD(res.aov)
+
+## Kruskal检验（非参数替代方法）
+kruskal.test(mean.wages ~ network.type, data = df)
+
+# 4. 分析社交网络渠道的特殊性
+## 比较有/无网络时社交渠道薪资
+t.test(df$wage.SS[df$network.type != "no-network"],
+       mu = mean(df$wage.SS[df$network.type == "no-network"]))
+
+## 社交网络贡献度分析
+df %>%
+  mutate(social_ratio = wage.SS / mean.wages) %>%
+  filter(network.type != "no-network") %>%
+  group_by(network.type) %>%
+  summarise(mean_ratio = mean(social_ratio, na.rm = TRUE))
+```
+
+
+```{r setup, include=FALSE}
+library(ggplot2)
+
+df11 <- read.csv("/Users/chenqiutong/Desktop/Labor marketV7 σ.csv", skip = 0)
+# 假设你已读入数据为 df
+# 如果 daily-contacts 是数字，network-type 是字符：
+df11$network.type <- as.factor(df11$network.type)
+
+ggplot(df11, aes(x = network.type, y = σ, fill = mean.wages)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "C", name = "Mean Wage") +
+  theme_minimal() +
+  labs(
+    title = "Heatmap of Mean Wage by Network Type and Sskill Matching Weight",
+    x = "Network Type",
+    y = "daily-contacts"
+  ) 
+
+```
+
+
+```{r setup, include=FALSE}
+library(ggplot2)
+
+df12 <- read.csv("/Users/chenqiutong/Desktop/0716experimentB.csv", skip = 0)
+# 假设你已读入数据为 df
+# 如果 daily-contacts 是数字，network-type 是字符：
+df12$network.type <- as.factor(df12$network.type)
+
+
+
+ggplot(df12, aes(x = network.type, y = β, fill = mean.wages)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = median(df12$mean.wages),
+                       name = "Mean Wage") +
+  theme_minimal() +
+  labs(
+    title = "Heatmap of Mean Wage by Network Type and Skill Matching Weight",
+    x = "Network Type",
+    y = "Skill Matching Weight"
+  )
+
+ggplot(df12, aes(x = network.type, y = σ, fill = mean.wages)) +
+  geom_tile(color = "grey90", linewidth = 0.5) +  # 白色边框，像表格
+  geom_text(aes(label = round(mean.wages, 0)), color = "black", size = 4,family = "Arial") +  # 添加数字
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = median(df11$mean.wages),
+                       name = "Mean Wage") +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Table-like Heatmap of Mean Wage",
+    x = "Network Type",
+    y = "Salary Matching Sensitivity"
+  ) +
+  theme(
+    panel.grid = element_blank(),   # 去掉背景网格线
+    axis.ticks = element_blank(),   # 去掉坐标轴小刻度
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1))  # 给图加个黑边框像表格
+```
+
+
+```{r setup, include=FALSE}
+library(ggplot2)
+
+df13 <- read.csv("/Users/chenqiutong/Desktop/0716experimentC.csv", skip = 0)
+# 假设你已读入数据为 df
+# 如果 daily-contacts 是数字，network-type 是字符：
+df13$network.type <- as.factor(df13$network.type)
+
+ggplot(df13, aes(x = network.type, y = σ, fill = mean.wages)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = median(df12$mean.wages),
+                       name = "Mean Wage") +
+  theme_minimal() +
+  labs(
+    title = "Heatmap of Mean Wage by Network Type and Initial Wage Share ",
+    x = "Network Type",
+    y = "Initial wage share "
+  )
+
+
+```
+
